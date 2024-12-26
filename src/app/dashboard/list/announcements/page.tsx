@@ -3,55 +3,109 @@ import Table from "@/components/Table";
 import TableSearch from "@/components/TableSearch";
 import Image from "next/image";
 import Link from "next/link";
-import { announcementsData, eventsData, role } from "@/lib/data";
 import FormModal from "@/components/FormModal";
+import { auth } from "@clerk/nextjs/server";
+import { Prisma, Announcement, Class } from "@prisma/client";
+import prisma from "@/lib/prisma";
+import { ITEM_PER_PAGE } from "@/lib/settings";
+import { getRoleValue, getIdValue } from "@/lib/utils";
 
-type Announcement = {
-  id: number;
-  title: string;
-  class: string;
-  date: string;
-};
+type AnnouncementList = Announcement & { class: Class };
 
-const columns = [
-  {
-    header: "Title",
-    accessor: "title",
-  },
-  {
-    header: "Class",
-    accessor: "class",
-  },
-  {
-    header: "Date",
-    accessor: "date",
-    className: "hidden md:table-cell",
-  },
-  {
-    header: "Start Time",
-    accessor: "startTime",
-    className: "hidden md:table-cell",
-  },
-  {
-    header: "End Time",
-    accessor: "endTime",
-    className: "hidden md:table-cell",
-  },
-  {
-    header: "Actions",
-    accessor: "action",
-  },
-];
+export default async function AnnouncementListPage({
+  searchParams,
+}: {
+  searchParams: { [key: string]: string | undefined };
+}) {
+  const { page, ...queryParams } = searchParams;
+  //PAGINATING../
 
-export default function AnnouncementListPage() {
-  const renderRow = (item: Announcement) => (
+  const p = page ? parseInt(page) : 1;
+
+  // URL PARAMS CONDITIONS
+
+  const query: Prisma.AnnouncementWhereInput = {};
+
+  // Destructuring to filter params and protect data
+  if (queryParams) {
+    for (const [key, value] of Object.entries(queryParams)) {
+      if (value !== undefined) {
+        switch (key) {
+          case "search":
+            query.title = { contains: value, mode: "insensitive" };
+            break;
+          default:
+            break;
+        }
+      }
+    }
+  }
+  //GET ROLE AND CURRENT ID
+  let role = await getRoleValue();
+  let currentUserId = await getIdValue();
+
+  //ROLE CONDITIONS
+
+  const roleConditions = {
+    teacher: { lessons: { some: { teacherId: currentUserId! } } },
+    student: { students: { some: { id: currentUserId! } } },
+    parent: { students: { some: { parentId: currentUserId! } } },
+  };
+
+  query.OR = [
+    { classId: null },
+    {
+      class: roleConditions[role as keyof typeof roleConditions] || {},
+    },
+  ];
+
+  const [data, count] = await prisma.$transaction([
+    prisma.announcement.findMany({
+      where: query,
+      include: {
+        class: true,
+      },
+      take: ITEM_PER_PAGE,
+      skip: ITEM_PER_PAGE * (p - 1),
+    }),
+    prisma.announcement.count({ where: query }),
+  ]);
+
+  const columns = [
+    {
+      header: "Title",
+      accessor: "title",
+    },
+    {
+      header: "Class",
+      accessor: "class",
+    },
+    {
+      header: "Date",
+      accessor: "date",
+      className: "hidden md:table-cell",
+    },
+    ...(role === "admin"
+      ? [
+          {
+            header: "Actions",
+            accessor: "action",
+          },
+        ]
+      : []),
+  ];
+
+  const renderRow = (item: AnnouncementList) => (
     <tr
       key={item.id}
       className="border-b border-gray-200 even:bg-slate-50 text-sm hover:bg-lamaPurpleLight"
     >
       <td className="flex items-center p-4 gap-4">{item.title}</td>
-      <td>{item.class}</td>
-      <td className="hidden md:table-cell">{item.date}</td>
+      <td>{item.class?.name || "-"}</td>
+      <td className="hidden md:table-cell">
+        {" "}
+        {new Intl.DateTimeFormat("en-US").format(item.date)}
+      </td>
       <td>
         <div className="flex items-center gap-2">
           {role === "admin" && (
@@ -88,9 +142,9 @@ export default function AnnouncementListPage() {
         </div>
       </div>
       {/* list */}
-      <Table columns={columns} renderRow={renderRow} data={announcementsData} />
+      <Table columns={columns} renderRow={renderRow} data={data} />
       {/* pagination */}
-      <Pagination />
+      <Pagination page={p} count={count} />
     </div>
   );
 }
